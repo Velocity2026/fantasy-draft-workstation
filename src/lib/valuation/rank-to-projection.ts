@@ -68,16 +68,24 @@ export async function convertRankingTiersToProjection(args: {
     byPosition.set(position, list);
   }
 
-  // This is a deterministic recomputation from the Ranking rows, so each run
-  // replaces the last rather than accumulating stale copies -- the same
-  // discipline applied to the internal-production model and to ADP after both
-  // hit the "old batch lingers and gets read as latest" bug. Evidence deletion
-  // is scoped to rows THIS function generated (isUserEntered: false, matching
-  // headline) so a re-run never touches anything typed in by hand under the
-  // same source name.
+  // This is a deterministic recomputation from the Ranking rows, so a re-run
+  // for the SAME season replaces the last rather than accumulating stale
+  // copies -- the same discipline applied to the internal-production model
+  // and to ADP after both hit the "old batch lingers and gets read as latest"
+  // bug. Both deletes are season-scoped on purpose: Craig will re-run this
+  // against next year's guide under season 2027, and 2026's rows must stay
+  // untouched as history rather than being silently deleted out from under
+  // him. Evidence deletion is additionally scoped to rows THIS function
+  // generated (isUserEntered: false, matching headline) so a re-run never
+  // touches anything typed in by hand under the same source name.
   await prisma.projection.deleteMany({ where: { source: args.source, season: args.season, scope: 'SEASON' } });
   await prisma.evidence.deleteMany({
-    where: { sourceName: args.source, isUserEntered: false, headline: `${args.source}: do not draft` },
+    where: {
+      sourceName: args.source,
+      season: args.season,
+      isUserEntered: false,
+      headline: `${args.source}: do not draft`,
+    },
   });
 
   const capturedAt = new Date();

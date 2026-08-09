@@ -809,7 +809,8 @@ model Evidence {
 
   evidenceType String // CAMP_REPORT | BEAT_REPORT | COACH_QUOTE | USAGE_TREND |
                       // DEPTH_CHART_MOVE | INJURY | TRANSACTION | PRESEASON_USAGE |
-                      // MARKET_MOVE | PROJECTION_DELTA | SCHEME_CHANGE | MANUAL_NOTE
+                      // MARKET_MOVE | PROJECTION_DELTA | SCHEME_CHANGE | MANUAL_NOTE |
+                      // ANALYST_PROFILE
   season String?
   week   Int?
 

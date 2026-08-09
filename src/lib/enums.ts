@@ -48,6 +48,7 @@ export const EVIDENCE_TYPES = [
   'PROJECTION_DELTA',
   'SCHEME_CHANGE',
   'MANUAL_NOTE',
+  'ANALYST_PROFILE',
 ] as const;
 export type EvidenceType = (typeof EVIDENCE_TYPES)[number];
 export const zEvidenceType = z.enum(EVIDENCE_TYPES);
@@ -65,6 +66,7 @@ export const EVIDENCE_TYPE_LABELS: Record<EvidenceType, string> = {
   PROJECTION_DELTA: 'Projection change',
   SCHEME_CHANGE: 'Scheme / staff change',
   MANUAL_NOTE: 'My note',
+  ANALYST_PROFILE: 'Analyst season profile',
 };
 
 export const IMPACT_LEVELS = ['HIGH', 'MEDIUM', 'LOW'] as const;
