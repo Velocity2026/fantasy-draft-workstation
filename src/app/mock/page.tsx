@@ -220,7 +220,7 @@ export default async function MockPage() {
                       floor {fmt(s.p10StartingPoints, 0)}
                     </span>
                     <span className="text-xs text-muted-foreground">{relativeTime(m.createdAt)}</span>
-                    <ActionButton action={() => deleteMock(m.id)} variant="ghost" size="sm" messageClassName="hidden">
+                    <ActionButton action={deleteMock.bind(null, m.id)} variant="ghost" size="sm" messageClassName="hidden">
                       Delete
                     </ActionButton>
                   </div>

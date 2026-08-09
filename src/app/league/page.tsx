@@ -71,7 +71,7 @@ export default async function LeaguePage() {
             {drafts.length === 1 ? '' : 's'} · {transactions} transactions
           </p>
         </div>
-        <ActionButton action={() => syncNow('history')} variant="outline">
+        <ActionButton action={syncNow.bind(null, 'history')} variant="outline">
           Re-import history
         </ActionButton>
       </div>
@@ -160,7 +160,7 @@ export default async function LeaguePage() {
               title="No manager profiles yet"
               description="These are built from completed drafts. Import history first."
               action={
-                <ActionButton action={() => syncNow('history')} variant="outline">
+                <ActionButton action={syncNow.bind(null, 'history')} variant="outline">
                   Import history
                 </ActionButton>
               }

@@ -132,7 +132,7 @@ export default async function ResearchPage() {
                       </div>
                     </div>
                     <ActionButton
-                      action={() => deleteEvidence(e.id)}
+                      action={deleteEvidence.bind(null, e.id)}
                       variant="ghost"
                       size="sm"
                       messageClassName="hidden"

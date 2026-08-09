@@ -113,7 +113,7 @@ export default async function SourcesPage() {
                         <td className="py-2 text-right">
                           <div className="flex justify-end gap-1">
                             <ActionButton
-                              action={() => toggleSource(s.key, !s.enabled)}
+                              action={toggleSource.bind(null, s.key, !s.enabled)}
                               variant="ghost"
                               size="sm"
                               messageClassName="hidden"
@@ -122,7 +122,7 @@ export default async function SourcesPage() {
                             </ActionButton>
                             {!s.isBuiltIn ? (
                               <ActionButton
-                                action={() => removeSource(s.key)}
+                                action={removeSource.bind(null, s.key)}
                                 variant="ghost"
                                 size="sm"
                                 confirm={`Remove "${s.label}"? Its imported data is kept, it just stops counting.`}

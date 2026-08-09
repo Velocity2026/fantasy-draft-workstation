@@ -41,7 +41,7 @@ export default async function DraftPage() {
           title="No draft found"
           description="Sleeper creates the draft object once your commissioner sets it up. Sync the league again after that happens."
           action={
-            <ActionButton action={() => syncNow('league')} variant="outline">
+            <ActionButton action={syncNow.bind(null, 'league')} variant="outline">
               Sync league
             </ActionButton>
           }
@@ -71,7 +71,7 @@ export default async function DraftPage() {
                     {d.season} · {d.status}
                   </Badge>
                 ) : (
-                  <ActionButton action={() => setActiveDraft(d.id)} variant="outline" size="sm" messageClassName="hidden">
+                  <ActionButton action={setActiveDraft.bind(null, d.id)} variant="outline" size="sm" messageClassName="hidden">
                     {d.season} · {d.status}
                   </ActionButton>
                 )}

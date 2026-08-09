@@ -173,7 +173,7 @@ export default async function SettingsPage() {
                   {m.isMe ? (
                     <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">This is you</span>
                   ) : (
-                    <ActionButton action={() => setMyTeam(m.id)} variant="outline" size="sm">
+                    <ActionButton action={setMyTeam.bind(null, m.id)} variant="outline" size="sm">
                       That&apos;s me
                     </ActionButton>
                   )}
@@ -193,16 +193,16 @@ export default async function SettingsPage() {
           <CardDescription>Each of these is safe to run repeatedly.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-start gap-3">
-          <ActionButton action={() => syncNow('players')} variant="outline">
+          <ActionButton action={syncNow.bind(null, 'players')} variant="outline">
             Sync players
           </ActionButton>
-          <ActionButton action={() => syncNow('league')} variant="outline">
+          <ActionButton action={syncNow.bind(null, 'league')} variant="outline">
             Sync league &amp; drafts
           </ActionButton>
-          <ActionButton action={() => syncNow('history')} variant="outline">
+          <ActionButton action={syncNow.bind(null, 'history')} variant="outline">
             Import past seasons
           </ActionButton>
-          <ActionButton action={() => syncNow('market')} variant="outline">
+          <ActionButton action={syncNow.bind(null, 'market')} variant="outline">
             Refresh market
           </ActionButton>
         </CardContent>

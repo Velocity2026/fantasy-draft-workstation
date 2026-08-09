@@ -102,7 +102,7 @@ export default async function DashboardPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <ActionButton action={() => syncNow('all')} variant="outline" size="sm">
+          <ActionButton action={syncNow.bind(null, 'all')} variant="outline" size="sm">
             Sync now
           </ActionButton>
           <ActionButton action={runValuationNow} size="sm">
@@ -190,7 +190,7 @@ export default async function DashboardPage() {
                 title="No drafts found"
                 description="Sleeper creates the draft once the commissioner sets it up. Sync the league again after that."
                 action={
-                  <ActionButton action={() => syncNow('league')} variant="outline" size="sm">
+                  <ActionButton action={syncNow.bind(null, 'league')} variant="outline" size="sm">
                     Sync league
                   </ActionButton>
                 }

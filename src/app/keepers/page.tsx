@@ -208,7 +208,7 @@ function KeeperTable({
                     <div className="text-[10px] text-muted-foreground tabular">pick {fmt(k.pickVorp, 0)}</div>
                   </div>
                   <ActionButton
-                    action={() => removeKeeper(k.playerId)}
+                    action={removeKeeper.bind(null, k.playerId)}
                     variant="ghost"
                     size="sm"
                     messageClassName="hidden"
