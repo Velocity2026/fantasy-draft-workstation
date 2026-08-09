@@ -88,9 +88,12 @@ export async function deriveLeagueAdp(args: {
   season: string;
   format?: ScoringFormat;
   minSamples?: number;
+  /** Drop players nobody has drafted within this many seasons. */
+  staleAfterSeasons?: number;
 }): Promise<SyncResult> {
   const format = args.format ?? 'PPR';
   const minSamples = args.minSamples ?? 1;
+  const staleAfterSeasons = args.staleAfterSeasons ?? 2;
 
   return withSyncRun({ provider: 'internal', job: 'adp', season: args.season }, async () => {
     const leagueIds = await leagueChain(args.leagueId);
@@ -105,10 +108,14 @@ export async function deriveLeagueAdp(args: {
     }
 
     const currentSeason = Number(args.season);
-    const samples = new Map<string, { picks: number[]; weights: number[]; teams: number }>();
+    const samples = new Map<
+      string,
+      { picks: number[]; weights: number[]; teams: number; lastSeason: number }
+    >();
 
     for (const draft of drafts) {
-      const age = Math.max(0, currentSeason - Number(draft.season));
+      const season = Number(draft.season);
+      const age = Math.max(0, currentSeason - season);
       // Half-life of one season: last year counts 1.0, two years ago 0.5, etc.
       const weight = Math.pow(0.5, age);
       const teams = draft.teams || 10;
@@ -117,18 +124,36 @@ export async function deriveLeagueAdp(args: {
         if (!pick.playerId) continue;
         // Keepers are not market signal — they're roster inertia.
         if (pick.isKeeper) continue;
-        const entry = samples.get(pick.playerId) ?? { picks: [], weights: [], teams };
+        const entry = samples.get(pick.playerId) ?? {
+          picks: [],
+          weights: [],
+          teams,
+          lastSeason: season,
+        };
         entry.picks.push(pick.pickNo);
         entry.weights.push(weight);
+        entry.lastSeason = Math.max(entry.lastSeason, season);
         samples.set(pick.playerId, entry);
       }
     }
 
     const capturedAt = bucketedNow();
     let written = 0;
+    let skippedStale = 0;
 
     for (const [playerId, entry] of samples) {
       if (entry.picks.length < minSamples) continue;
+
+      // Recency weighting alone is not enough. Because the weighted mean is
+      // normalised by total weight, a player drafted ONCE in 2019 and never
+      // since produces an ADP indistinguishable from one drafted there last
+      // year — which puts long-retired players at the top of the board. If
+      // nobody has drafted him in the last few seasons, he has no current
+      // market price and we should say nothing rather than something wrong.
+      if (currentSeason - entry.lastSeason > staleAfterSeasons) {
+        skippedStale += 1;
+        continue;
+      }
       const totalWeight = entry.weights.reduce((a, b) => a + b, 0);
       if (totalWeight === 0) continue;
 
@@ -171,7 +196,12 @@ export async function deriveLeagueAdp(args: {
     return {
       recordsIn: samples.size,
       recordsWritten: written,
-      detail: { draftsUsed: drafts.length, seasons: drafts.map((d) => d.season) },
+      detail: {
+        draftsUsed: drafts.length,
+        seasons: drafts.map((d) => d.season),
+        skippedStale,
+        staleAfterSeasons,
+      },
     };
   });
 }

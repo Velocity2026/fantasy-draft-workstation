@@ -1,6 +1,7 @@
 import { prisma } from '../db';
-import { sleeper, type SleeperDraft } from '../providers/sleeper';
+import { sleeper, normalisePosition, type SleeperDraft, type SleeperDraftPick } from '../providers/sleeper';
 import { writeJson } from '../json';
+import { normaliseName } from '../utils';
 import { withSyncRun, type SyncResult } from './runner';
 
 /**
@@ -74,6 +75,13 @@ export async function syncDraftPicks(draftId: string): Promise<DraftSyncResult> 
   const members = await prisma.leagueMember.findMany({ where: { leagueId: draft.league_id } });
   const memberByUserId = new Map(members.map((m) => [m.sleeperUserId, m.id]));
 
+  // Historical drafts reference players Sleeper has since dropped from its
+  // active dictionary (retirees, camp bodies). Their ids would fail the Player
+  // foreign key. Reconstruct a minimal Player row from the pick's own metadata
+  // instead of discarding the pick — losing old picks would quietly corrupt
+  // both the derived ADP and the manager tendency profiles.
+  await ensurePlayersExist(picks);
+
   const newPickNos: number[] = [];
   let written = 0;
 
@@ -115,6 +123,61 @@ export async function syncDraftPicks(draftId: string): Promise<DraftSyncResult> 
     totalPicks: picks.filter((p) => p.player_id).length,
     status: draft.status,
   };
+}
+
+/**
+ * Create stub Player rows for any drafted player we don't already know about.
+ *
+ * Sleeper's draft-pick metadata carries first/last name, position and team, so
+ * a usable record can be rebuilt without another API call. These stubs are
+ * marked inactive: they should appear in draft history and count toward ADP,
+ * but never surface as draftable on this year's board.
+ */
+async function ensurePlayersExist(picks: SleeperDraftPick[]) {
+  const referenced = [...new Set(picks.map((p) => p.player_id).filter((id): id is string => !!id))];
+  if (!referenced.length) return;
+
+  const known = new Set(
+    (await prisma.player.findMany({ where: { id: { in: referenced } }, select: { id: true } })).map(
+      (p) => p.id,
+    ),
+  );
+  const missing = referenced.filter((id) => !known.has(id));
+  if (!missing.length) return;
+
+  const validTeams = new Set(
+    (await prisma.nflTeam.findMany({ select: { id: true } })).map((t) => t.id),
+  );
+  const metaByPlayer = new Map<string, Record<string, string>>();
+  for (const p of picks) {
+    if (p.player_id && p.metadata) metaByPlayer.set(p.player_id, p.metadata);
+  }
+
+  for (const playerId of missing) {
+    const meta = metaByPlayer.get(playerId) ?? {};
+    const first = meta.first_name ?? '';
+    const last = meta.last_name ?? '';
+    const fullName = [first, last].filter(Boolean).join(' ') || `Unknown player ${playerId}`;
+    const position = normalisePosition(meta.position ?? null, null) ?? 'UNK';
+    const team = meta.team && validTeams.has(meta.team) ? meta.team : null;
+
+    await prisma.player.upsert({
+      where: { id: playerId },
+      create: {
+        id: playerId,
+        fullName,
+        firstName: first || null,
+        lastName: last || null,
+        searchName: normaliseName(fullName),
+        position,
+        teamId: team,
+        // Not on a current roster as far as we know — keep off this year's board.
+        active: false,
+        status: 'Historical',
+      },
+      update: {},
+    });
+  }
 }
 
 /**

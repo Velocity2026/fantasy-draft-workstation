@@ -88,6 +88,7 @@ function toPlayerData(p: SleeperPlayer) {
     jerseyNumber: p.number,
     active: p.active ?? true,
     status: p.status,
+    searchRank: typeof p.search_rank === 'number' && p.search_rank < 9999999 ? p.search_rank : null,
     injuryStatus: p.injury_status,
     injuryBodyPart: p.injury_body_part,
     injuryNotes: p.injury_notes,

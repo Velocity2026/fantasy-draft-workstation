@@ -15,6 +15,7 @@
     "db:generate": "prisma generate",
     "db:reset": "prisma migrate reset --force",
     "setup": "prisma generate && prisma db push && tsx scripts/bootstrap.ts",
+    "find:league": "tsx scripts/find-league.ts",
     "sync:players": "tsx scripts/sync-players.ts",
     "sync:league": "tsx scripts/sync-league.ts",
     "sync:market": "tsx scripts/sync-market.ts",

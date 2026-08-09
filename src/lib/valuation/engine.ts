@@ -262,6 +262,7 @@ async function assembleInputs(args: {
       age: true,
       yearsExp: true,
       injuryStatus: true,
+      searchRank: true,
     },
   });
 
@@ -299,12 +300,31 @@ async function assembleInputs(args: {
   const latestRanking = new Map<string, (typeof rankings)[number]>();
   for (const r of rankings) if (!latestRanking.has(r.playerId)) latestRanking.set(r.playerId, r);
 
-  // Latest ADP, preferring an exact team-count match for this league.
-  const adps = await prisma.adpSnapshot.findMany({
+  // ADP is read as the most recent *batch* per source, not the most recent row
+  // per player.
+  //
+  // These tables are append-only, so a player who appeared in an earlier
+  // derivation but is correctly absent from the newest one still has an old
+  // row sitting there. Latest-per-player would resurrect him — which is
+  // precisely how a long-retired tight end ends up ranked TE2. Taking the
+  // newest batch means a player dropping out of a source actually drops out.
+  const adpBatches = await prisma.adpSnapshot.groupBy({
+    by: ['source'],
     where: { season: args.season },
-    orderBy: [{ capturedAt: 'desc' }],
-    select: { playerId: true, adp: true, adpStdDev: true, teamCount: true, source: true },
+    _max: { capturedAt: true },
   });
+
+  const adps = adpBatches.length
+    ? await prisma.adpSnapshot.findMany({
+        where: {
+          season: args.season,
+          OR: adpBatches
+            .filter((b) => b._max.capturedAt)
+            .map((b) => ({ source: b.source, capturedAt: b._max.capturedAt as Date })),
+        },
+        select: { playerId: true, adp: true, adpStdDev: true, teamCount: true, source: true },
+      })
+    : [];
   const latestAdp = new Map<string, (typeof adps)[number]>();
   for (const a of adps) {
     const existing = latestAdp.get(a.playerId);
@@ -317,21 +337,33 @@ async function assembleInputs(args: {
     if (candidateMatches && !existingMatches) latestAdp.set(a.playerId, a);
   }
 
-  // Positional ordering used for the baseline fallback: rank players who have
-  // no projection by whatever signal exists (consensus rank, then ADP).
+  // Positional ordering used for the baseline fallback.
+  //
+  // Signals are ranked by preference, but a single signal is used for the whole
+  // position rather than mixing them per player — ADP (a pick number) and
+  // Sleeper's search rank (a global relevance index) are different scales, and
+  // interleaving them produces nonsense orderings.
+  //
+  // Sleeper's search rank is the default because it is the only signal that
+  // covers every player. In a keeper league the best players are kept every
+  // season and therefore never appear in derived ADP at all; ordering by ADP
+  // alone silently drops them off the board.
   const fallbackOrder = new Map<SkillPosition, string[]>();
   for (const pos of SKILL_POSITIONS) {
-    const ordered = players
-      .filter((p) => p.position === pos)
-      .map((p) => ({
-        id: p.id,
-        key:
-          latestRanking.get(p.id)?.positionRank ??
-          latestRanking.get(p.id)?.overallRank ??
-          latestAdp.get(p.id)?.adp ??
-          Number.POSITIVE_INFINITY,
-      }))
-      .filter((p) => Number.isFinite(p.key))
+    const atPos = players.filter((p) => p.position === pos);
+
+    const signal = (p: (typeof players)[number]): number => {
+      const ranking = latestRanking.get(p.id);
+      // An imported positional ranking is the best signal when it exists.
+      if (ranking?.positionRank != null) return ranking.positionRank;
+      if (ranking?.overallRank != null) return ranking.overallRank;
+      if (p.searchRank != null) return p.searchRank;
+      // No signal at all — sort last, but keep him on the board.
+      return Number.POSITIVE_INFINITY;
+    };
+
+    const ordered = atPos
+      .map((p) => ({ id: p.id, key: signal(p) }))
       .sort((a, b) => a.key - b.key)
       .map((p) => p.id);
     fallbackOrder.set(pos, ordered);

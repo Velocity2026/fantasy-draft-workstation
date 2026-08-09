@@ -89,6 +89,12 @@ model Player {
   jerseyNumber   Int?
   active         Boolean @default(true)
   status         String? // Active, Inactive, Injured Reserve, ...
+  /// Sleeper's own global relevance ordering (lower = more relevant). The only
+  /// signal covering every player regardless of whether he has ever been
+  /// drafted in this league, so it is the board's universal fallback ordering.
+  /// Critical in a keeper league: perennial keepers never appear in derived ADP,
+  /// and without this they drop off the board entirely.
+  searchRank     Int?
 
   // Denormalised "latest known" fields for fast board rendering. The
   // authoritative history is in InjuryReport / DepthChartEntry.

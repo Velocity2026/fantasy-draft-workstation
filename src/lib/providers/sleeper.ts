@@ -229,6 +229,15 @@ export const sleeper = {
   },
 
   /**
+   * Every league a user belongs to in a season. Lets setup start from a public
+   * username instead of asking for a league id copied out of a URL — and no
+   * credentials are involved, since Sleeper's read API is unauthenticated.
+   */
+  getUserLeagues(userId: string, season: string, sport = 'nfl'): Promise<SleeperLeague[]> {
+    return getOrEmpty<SleeperLeague>(`/user/${userId}/leagues/${sport}/${season}`);
+  },
+
+  /**
    * Trending adds/drops across all of Sleeper. This is the closest thing to a
    * free market-percentage feed and it powers both late-draft buzz and (in
    * Phase 10) the "is the market onto him yet" signal.
