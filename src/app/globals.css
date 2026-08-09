@@ -1,0 +1,123 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 222 47% 20%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 210 40% 94%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 222 47% 30%;
+    --radius: 0.5rem;
+
+    /* Position colours. Kept identical in both themes so muscle memory built
+       during a draft transfers between light and dark. */
+    --pos-qb: 341 75% 45%;
+    --pos-rb: 152 60% 33%;
+    --pos-wr: 214 80% 48%;
+    --pos-te: 27 87% 43%;
+    --pos-k: 266 45% 50%;
+    --pos-dst: 215 15% 40%;
+  }
+
+  .dark {
+    --background: 222 47% 7%;
+    --foreground: 210 40% 96%;
+    --card: 222 45% 10%;
+    --card-foreground: 210 40% 96%;
+    --popover: 222 45% 10%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 210 40% 96%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 217 33% 16%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 217 33% 16%;
+    --muted-foreground: 215 20% 62%;
+    --accent: 217 33% 20%;
+    --accent-foreground: 210 40% 96%;
+    --destructive: 0 63% 45%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 33% 20%;
+    --input: 217 33% 22%;
+    --ring: 213 27% 70%;
+
+    --pos-qb: 341 80% 62%;
+    --pos-rb: 152 55% 50%;
+    --pos-wr: 214 85% 65%;
+    --pos-te: 27 90% 58%;
+    --pos-k: 266 60% 70%;
+    --pos-dst: 215 20% 62%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+
+  /* Numeric columns line up only with tabular figures — essential when
+     scanning a board of projections under time pressure. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* Sticky table headers used by the board and draft room. */
+  .sticky-head th {
+    @apply sticky top-0 z-10 bg-background/95 backdrop-blur;
+  }
+
+  /* A row that just changed (new pick landed) flashes once. */
+  .row-flash {
+    animation: row-flash 1.6s ease-out 1;
+  }
+
+  @keyframes row-flash {
+    0% {
+      background-color: hsl(var(--accent));
+    }
+    100% {
+      background-color: transparent;
+    }
+  }
+}
+
+/* Scrollbars — the draft room has several independently scrolling panes and
+   the default Windows scrollbar is visually heavy. */
+@layer utilities {
+  .thin-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+  .thin-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .thin-scroll::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 4px;
+  }
+  .thin-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
