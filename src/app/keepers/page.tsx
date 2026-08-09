@@ -16,6 +16,8 @@ import {
 import { ActionButton } from '@/components/action-button';
 import { PosBadge, TierChip } from '@/components/player-bits';
 import { importKeepersFromLastDraft, removeKeeper, runValuationNow } from '../actions';
+import { summarizeKeepers } from '../ai-actions';
+import { AiSummary } from '@/components/ai-summary';
 import { KeeperForm } from './keeper-form';
 
 export const dynamic = 'force-dynamic';
@@ -89,6 +91,14 @@ export default async function KeepersPage() {
           Import from Sleeper
         </ActionButton>
       </div>
+
+      {evaluations.length ? (
+        <AiSummary
+          title="Written verdict"
+          action={summarizeKeepers}
+          hint="Turns the surplus numbers above into a plain-English recommendation, focusing on the marginal calls."
+        />
+      ) : null}
 
       {mine.length ? <KeeperTable title="Your keepers" rows={mine} teams={teams} /> : null}
       {others.length ? <KeeperTable title="Other teams" rows={others} teams={teams} muted /> : null}

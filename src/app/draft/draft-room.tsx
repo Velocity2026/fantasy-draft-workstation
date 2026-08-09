@@ -7,6 +7,8 @@ import { DRAFT_STRATEGIES, DRAFT_STRATEGY_LABELS, SKILL_POSITIONS, type DraftStr
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Select } from '@/components/ui/primitives';
 import { PosBadge, TierChip, InjuryTag, ValueDelta, BaselineFlag, TeamTag } from '@/components/player-bits';
 import { enterPick, undoDraftPick, pullDraftNow, setStrategy } from '../actions';
+import { summarizeDraft } from '../ai-actions';
+import { AiSummary } from '@/components/ai-summary';
 import type { DraftRoomState } from '@/lib/draft/state';
 
 /**
@@ -268,6 +270,16 @@ export function DraftRoom({ initialState }: { initialState: DraftRoomState }) {
             ) : null}
           </CardContent>
         </Card>
+
+        {state.suggestions.length ? (
+          <div className="xl:col-span-3">
+            <AiSummary
+              title="Second opinion on this pick"
+              action={summarizeDraft.bind(null, draftId)}
+              hint="A four-sentence read on the situation above. Costs an API call, so it only runs when you ask."
+            />
+          </div>
+        ) : null}
 
         {/* --- Pick feed + available -------------------------------------- */}
         <div className="space-y-3">

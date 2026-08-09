@@ -15,6 +15,8 @@ import {
 import { ActionButton } from '@/components/action-button';
 import { PosBadge } from '@/components/player-bits';
 import { syncNow } from '../actions';
+import { summarizeLeague } from '../ai-actions';
+import { AiSummary } from '@/components/ai-summary';
 
 export const dynamic = 'force-dynamic';
 
@@ -75,6 +77,14 @@ export default async function LeaguePage() {
           Re-import history
         </ActionButton>
       </div>
+
+      {profiles.length ? (
+        <AiSummary
+          title="How to exploit this league"
+          action={summarizeLeague}
+          hint="Reads the tendency table below and says which positions you can wait on and where you need to move first."
+        />
+      ) : null}
 
       {/* --- Manager tendencies -------------------------------------------- */}
       <Card>
