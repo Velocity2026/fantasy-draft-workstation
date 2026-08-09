@@ -107,6 +107,7 @@ model Player {
   rawJson   String? // full Sleeper player blob, kept for fields we haven't modelled
   updatedAt DateTime @updatedAt
 
+  profile         PlayerProfile?
   externalIds     PlayerExternalId[]
   rankings        Ranking[]
   projections     Projection[]
@@ -128,6 +129,78 @@ model Player {
   @@index([position])
   @@index([teamId])
   @@index([searchName])
+}
+
+/// Athletic profile, NFL draft capital and college production.
+///
+/// The "talent" half of the breakout model. Opportunity (snaps, routes, target
+/// share) says whether a player will get volume; this says whether he can
+/// convert it, and it is what separates a one-year producer from a keeper.
+///
+/// Draft capital is the single strongest prior here: teams give runway to
+/// players they spent premium picks on. It is stored as both round/pick and a
+/// derived 0..1 score so the model can use it directly.
+///
+/// One row per player, rebuilt from nflverse. Sourced by matching on
+/// name + birth date, which resolves ~99% of the top 100 — Sleeper's own
+/// gsis_id is only ~22% populated for current stars, so it cannot be the join.
+model PlayerProfile {
+  id       String @id @default(cuid())
+  playerId String @unique
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  // --- Cross-provider ids resolved during the match ----------------------
+  gsisId String?
+  pfrId  String?
+  espnId String?
+
+  // --- NFL draft capital -------------------------------------------------
+  draftYear    Int?
+  draftRound   Int?
+  draftPick    Int? // pick within the round
+  draftOverall Int?
+  draftTeam    String?
+  isUdfa       Boolean @default(false)
+  /// 0..1, derived from overall pick. Round 1 top-10 approaches 1, UDFA is 0.
+  draftCapitalScore Float?
+
+  // --- Combine / pro day -------------------------------------------------
+  heightIn    Float?
+  weightLb    Float?
+  fortyYard   Float?
+  benchReps   Int?
+  vertical    Float?
+  broadJump   Float?
+  threeCone   Float?
+  shuttle     Float?
+  /// Weight-adjusted speed. Classic RB/WR explosiveness proxy.
+  speedScore  Float?
+  /// 0..1 composite across whichever combine metrics exist, normalised within
+  /// position. Null when too few measurements to be meaningful.
+  athleticScore Float?
+  /// How many combine measurements actually backed athleticScore, so the UI can
+  /// distinguish a full workout from a single 40 time.
+  athleticSampleSize Int @default(0)
+
+  // --- College -----------------------------------------------------------
+  collegeName       String?
+  collegeConference String?
+  rookieSeason      Int?
+  /// Age at NFL entry — younger entry correlates with higher ceiling.
+  entryAge          Float?
+  /// Share of college team receiving yards + TDs in best season, when known.
+  collegeDominator  Float?
+  /// Age at first dominant college season. Strong WR breakout predictor.
+  breakoutAge       Float?
+
+  source     String   @default("nflverse")
+  /// Confidence of the identity match that produced this row (1 = exact id).
+  matchConfidence Float @default(1)
+  computedAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([draftRound])
+  @@index([athleticScore])
 }
 
 /// Cross-provider identity map. FantasyPros / FTN / nflverse / PFF / ESPN all

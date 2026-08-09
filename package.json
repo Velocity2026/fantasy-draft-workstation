@@ -19,6 +19,7 @@
     "sync:players": "tsx scripts/sync-players.ts",
     "sync:league": "tsx scripts/sync-league.ts",
     "sync:market": "tsx scripts/sync-market.ts",
+    "sync:profiles": "tsx scripts/sync-profiles.ts",
     "sync:history": "tsx scripts/sync-history.ts",
     "sync:all": "tsx scripts/sync-all.ts",
     "value": "tsx scripts/run-valuation.ts",
