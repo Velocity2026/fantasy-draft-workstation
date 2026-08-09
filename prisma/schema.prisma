@@ -1,0 +1,1065 @@
+// ---------------------------------------------------------------------------
+// Fantasy Draft Workstation — data model
+//
+// DESIGN NOTES (read before changing anything here)
+//
+// 1. This schema is deliberately wider than the draft-first release needs.
+//    Phases 9-12 (in-season ingestion, waivers/breakouts, start/sit, trades)
+//    must be additive. Anything that would require redesigning the core is
+//    modelled now, even if nothing writes to it yet.
+//
+// 2. TIME-SERIES ARE APPEND-ONLY. Weekly and market state is never overwritten
+//    with a later state. Weekly rows are keyed by (subject, season, week,
+//    source); market/ranking snapshots additionally include `capturedAt` in
+//    their key so multiple captures per week are all preserved. Breakout
+//    detection is a delta over these rows, so losing history destroys the
+//    feature.
+//
+// 3. Two generic backbones carry every current and future module:
+//      - Evidence         : any observation about a player/team/league.
+//      - Recommendation   : any typed suggestion, with links back to Evidence.
+//    Draft recommendations use these today; waiver, start/sit and trade modules
+//    attach to the same tables via the `module` discriminator. This is why
+//    those tables are polymorphic (subjectType + subjectId) rather than
+//    draft-specific.
+//
+// 4. WEEK 0 MEANS "SEASON SCOPE". Any `week` column that participates in a
+//    @@unique key is non-nullable and defaults to 0, because SQL treats NULL as
+//    distinct from NULL — a nullable column inside a unique constraint silently
+//    stops deduplicating. Week 0 is never a real NFL week, so it is a safe
+//    sentinel. The same applies to AdpSnapshot.teamCount (0 = unspecified).
+//    Week columns *not* in a unique key stay nullable.
+//
+// 5. SQLite has no enums and no native JSON. Enum-like columns are String and
+//    are validated in TypeScript (src/lib/enums.ts + Zod). JSON payloads are
+//    String columns named `*Json` with typed read/write helpers in
+//    src/lib/json.ts. This also keeps a later move to Postgres mechanical.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// SECTION 1 — REFERENCE: teams and players
+// ===========================================================================
+
+model NflTeam {
+  id           String  @id // "PHI", "KC", ... Sleeper abbreviations
+  name         String
+  conference   String?
+  division     String?
+  byeWeek      Int?
+  // Current-state coaching/scheme context. Historical changes live in
+  // TeamContextChange so we never lose the "what changed and when".
+  headCoach    String?
+  offCoordinator String?
+  defCoordinator String?
+  offScheme    String?
+  updatedAt    DateTime @updatedAt
+
+  players       Player[]
+  weekContexts  TeamWeekContext[]
+  contextChanges TeamContextChange[]
+  depthChart    DepthChartEntry[]
+}
+
+model Player {
+  id        String @id // Sleeper player_id — the canonical id across the app
+  fullName  String
+  firstName String?
+  lastName  String?
+  searchName String? // normalised for fuzzy matching against CSV imports
+  position  String // QB RB WR TE K DEF — see enums.ts Position
+  teamId    String?
+  team      NflTeam? @relation(fields: [teamId], references: [id])
+
+  age            Int?
+  birthDate      String?
+  heightIn       Int?
+  weightLb       Int?
+  college        String?
+  yearsExp       Int?
+  rookieYear     Int?
+  jerseyNumber   Int?
+  active         Boolean @default(true)
+  status         String? // Active, Inactive, Injured Reserve, ...
+
+  // Denormalised "latest known" fields for fast board rendering. The
+  // authoritative history is in InjuryReport / DepthChartEntry.
+  injuryStatus       String?
+  injuryBodyPart     String?
+  injuryNotes        String?
+  depthChartPosition String?
+  depthChartOrder    Int?
+
+  rawJson   String? // full Sleeper player blob, kept for fields we haven't modelled
+  updatedAt DateTime @updatedAt
+
+  externalIds     PlayerExternalId[]
+  rankings        Ranking[]
+  projections     Projection[]
+  adpSnapshots    AdpSnapshot[]
+  marketTrends    MarketTrend[]
+  weekStats       PlayerWeekStat[]
+  injuries        InjuryReport[]
+  practices       PracticeParticipation[]
+  depthChart      DepthChartEntry[]
+  evidence        Evidence[]
+  recommendations Recommendation[]
+  valuations      PlayerValuation[]
+  boardEntries    BoardEntry[]
+  draftPicks      DraftPick[]
+  keepers         KeeperDeclaration[]
+  mockPicks       MockPick[]
+  mockAvailability MockAvailability[]
+
+  @@index([position])
+  @@index([teamId])
+  @@index([searchName])
+}
+
+/// Cross-provider identity map. FantasyPros / FTN / nflverse / PFF / ESPN all
+/// use their own ids; every ingest path resolves through here so a provider
+/// swap never requires a data migration.
+model PlayerExternalId {
+  id         String @id @default(cuid())
+  playerId   String
+  player     Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  source     String // sleeper | fantasypros | ftn | nflverse | pfr | espn | yahoo | rotowire
+  externalId String
+  confidence Float  @default(1.0) // <1 when matched by name rather than a hard id
+  createdAt  DateTime @default(now())
+
+  @@unique([source, externalId])
+  @@index([playerId])
+}
+
+// ===========================================================================
+// SECTION 2 — LEAGUE (Sleeper)
+// ===========================================================================
+
+model League {
+  id                 String  @id // Sleeper league_id
+  name               String
+  season             String
+  sport              String  @default("nfl")
+  status             String? // pre_draft | drafting | in_season | complete
+  totalRosters       Int
+  scoringType        String? // ppr | half_ppr | std — derived from scoringJson
+  isKeeper           Boolean @default(false)
+  avatar             String?
+  previousLeagueId   String? // chains back through prior seasons for history
+  isPrimary          Boolean @default(false)
+
+  settingsJson        String? // Sleeper league.settings
+  scoringJson         String? // Sleeper league.scoring_settings
+  rosterPositionsJson String? // ["QB","RB","RB","WR","WR","WR","TE","FLEX",...]
+  metadataJson        String?
+
+  syncedAt  DateTime?
+  createdAt DateTime @default(now())
+
+  members         LeagueMember[]
+  rosters         LeagueRoster[]
+  rosterSnapshots RosterSnapshot[]
+  lineupSnapshots LineupSnapshot[]
+  transactions    LeagueTransaction[]
+  drafts          Draft[]
+  keepers         KeeperDeclaration[]
+  boardEntries    BoardEntry[]
+  valuationRuns   ValuationRun[]
+  mockDrafts      MockDraft[]
+  recommendations Recommendation[]
+  managerProfiles ManagerProfile[]
+}
+
+model LeagueMember {
+  id          String @id @default(cuid())
+  leagueId    String
+  league      League @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  sleeperUserId String
+  displayName String
+  teamName    String?
+  avatar      String?
+  isMe        Boolean @default(false)
+
+  rosters      LeagueRoster[]
+  draftPicks   DraftPick[]
+  keepers      KeeperDeclaration[]
+  transactions LeagueTransaction[]
+  profiles     ManagerProfile[]
+
+  @@unique([leagueId, sleeperUserId])
+}
+
+/// Current roster state (upserted). Weekly history lives in RosterSnapshot.
+model LeagueRoster {
+  id       String @id @default(cuid())
+  leagueId String
+  league   League @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  rosterId Int // Sleeper roster_id, 1..N
+  memberId String?
+  member   LeagueMember? @relation(fields: [memberId], references: [id])
+
+  playerIdsJson String? // string[]
+  startersJson  String?
+  reserveJson   String?
+  taxiJson      String?
+  settingsJson  String? // wins/losses/fpts/waiver position/FAAB
+  updatedAt     DateTime @updatedAt
+
+  @@unique([leagueId, rosterId])
+}
+
+/// Append-only weekly roster state. Required for in-season "what did they have
+/// when they made this move" analysis and for opponent/roster monitoring.
+model RosterSnapshot {
+  id       String @id @default(cuid())
+  leagueId String
+  league   League @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  rosterId Int
+  season   String
+  week     Int
+  playerIdsJson String
+  startersJson  String?
+  reserveJson   String?
+  settingsJson  String?
+  capturedAt    DateTime @default(now())
+
+  @@unique([leagueId, rosterId, season, week, capturedAt])
+  @@index([leagueId, season, week])
+}
+
+/// Weekly submitted lineups + realised points. Powers start/sit hindsight.
+model LineupSnapshot {
+  id        String @id @default(cuid())
+  leagueId  String
+  league    League @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  rosterId  Int
+  season    String
+  week      Int
+  matchupId Int?
+  startersJson     String
+  benchJson        String?
+  playerPointsJson String? // { playerId: points }
+  totalPoints      Float?
+  capturedAt DateTime @default(now())
+
+  @@unique([leagueId, rosterId, season, week, capturedAt])
+  @@index([leagueId, season, week])
+}
+
+model LeagueTransaction {
+  id       String @id // Sleeper transaction_id
+  leagueId String
+  league   League @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  type     String // waiver | free_agent | trade | commissioner
+  status   String?
+  season   String
+  week     Int?
+  leg      Int?
+  creatorMemberId String?
+  creator  LeagueMember? @relation(fields: [creatorMemberId], references: [id])
+
+  rosterIdsJson  String? // int[]
+  addsJson       String? // { playerId: rosterId }
+  dropsJson      String?
+  draftPicksJson String?
+  waiverBid      Int?
+  settingsJson   String?
+  createdAtMs    BigInt?
+  capturedAt     DateTime @default(now())
+
+  @@index([leagueId, season, week])
+  @@index([type])
+}
+
+/// Rolling behavioural model of each manager, rebuilt from draft history and
+/// in-season transactions. Draft phase fills the draft columns; Phase 9+ fills
+/// the transaction columns without a schema change.
+model ManagerProfile {
+  id        String @id @default(cuid())
+  leagueId  String
+  league    League @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  memberId  String
+  member    LeagueMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  season    String? // null = all-time
+
+  // Draft tendencies
+  avgReachVsAdp     Float? // negative = drafts later than ADP (value drafter)
+  qbTendency        String? // early | mid | late | stream
+  teTendency        String?
+  rbShareEarly      Float? // % of first 4 picks spent on RB
+  wrShareEarly      Float?
+  homerScore        Float? // bias toward one NFL team
+  rookieAffinity    Float?
+  predictabilityR2  Float? // how well ADP predicts their picks
+
+  // In-season tendencies (Phase 9+)
+  waiverAggression  Float?
+  faabBurnRate      Float?
+  tradeFrequency    Float?
+  streamingRate     Float?
+
+  sampleSize   Int      @default(0)
+  detailJson   String?
+  computedAt   DateTime @default(now())
+
+  @@unique([leagueId, memberId, season])
+}
+
+// ===========================================================================
+// SECTION 3 — DRAFTS AND KEEPERS
+// ===========================================================================
+
+model Draft {
+  id       String @id // Sleeper draft_id
+  leagueId String
+  league   League @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  season   String
+  type     String // snake | linear | auction
+  status   String // pre_draft | drafting | complete
+  rounds   Int
+  teams    Int
+  pickTimerSec Int?
+  startTimeMs  BigInt?
+  isPrimary    Boolean @default(false) // the draft the live room follows
+
+  slotToRosterJson String? // { "1": rosterId, ... }
+  settingsJson     String?
+  metadataJson     String?
+
+  syncedAt  DateTime?
+  createdAt DateTime @default(now())
+
+  picks DraftPick[]
+
+  @@index([leagueId, season])
+}
+
+model DraftPick {
+  id       String @id @default(cuid())
+  draftId  String
+  draft    Draft  @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  pickNo   Int // 1-based overall
+  round    Int
+  draftSlot Int
+  rosterId Int?
+  memberId String?
+  member   LeagueMember? @relation(fields: [memberId], references: [id])
+  playerId String?
+  player   Player? @relation(fields: [playerId], references: [id])
+
+  isKeeper    Boolean @default(false)
+  auctionCost Int?
+  pickedAtMs  BigInt?
+  /// Set when the pick was entered by hand in the draft room rather than
+  /// synced from Sleeper (offline drafts, or Sleeper lagging behind the room).
+  isManual    Boolean @default(false)
+  metadataJson String?
+  capturedAt  DateTime @default(now())
+
+  @@unique([draftId, pickNo])
+  @@index([draftId, round])
+  @@index([playerId])
+}
+
+model KeeperDeclaration {
+  id       String @id @default(cuid())
+  leagueId String
+  league   League @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  season   String
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  memberId String?
+  member   LeagueMember? @relation(fields: [memberId], references: [id])
+  rosterId Int?
+
+  /// What the keeper costs this season, expressed as a draft pick.
+  costRound     Int?
+  costPickNo    Int?
+  costAmount    Int? // auction leagues
+  /// Where they were drafted/acquired originally — drives escalating-cost rules.
+  originalRound Int?
+  yearsKept     Int    @default(0)
+  source        String @default("manual") // sleeper | manual
+  isConfirmed   Boolean @default(false)
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([leagueId, season, playerId])
+  @@index([leagueId, season])
+}
+
+// ===========================================================================
+// SECTION 4 — MARKET: rankings, projections, ADP, roster%
+// All append-only. `capturedAt` is part of the key so we keep every snapshot.
+// ===========================================================================
+
+model Ranking {
+  id       String @id @default(cuid())
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  source   String // fantasypros | ftn | sleeper | manual | ...
+  scope    String // DRAFT | WEEKLY | ROS | DYNASTY | KEEPER
+  season   String
+  week     Int    @default(0) // 0 = season-scope (DRAFT/ROS rankings)
+  format   String @default("PPR") // PPR | HALF | STD | SUPERFLEX
+
+  overallRank  Float?
+  positionRank Float?
+  tier         Int?
+  bestRank     Float?
+  worstRank    Float?
+  avgRank      Float?
+  stdDev       Float?
+  expertCount  Int?
+
+  capturedAt DateTime @default(now())
+
+  @@unique([playerId, source, scope, season, week, format, capturedAt])
+  @@index([source, scope, season, week])
+  @@index([playerId, scope])
+}
+
+model Projection {
+  id       String @id @default(cuid())
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  source   String // ftn | fantasypros | sleeper | internal
+  scope    String // SEASON | WEEKLY | ROS
+  season   String
+  week     Int    @default(0) // 0 = season-scope
+  format   String @default("PPR")
+
+  fantasyPoints Float?
+  floorPoints   Float?
+  ceilingPoints Float?
+  /// Full stat line (attempts, targets, yards, TDs, ...) — see StatLine type.
+  statsJson     String?
+  gamesPlayed   Float?
+
+  capturedAt DateTime @default(now())
+
+  @@unique([playerId, source, scope, season, week, format, capturedAt])
+  @@index([source, scope, season, week])
+  @@index([playerId, scope])
+}
+
+model AdpSnapshot {
+  id       String @id @default(cuid())
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  source   String // sleeper | fantasypros | underdog | manual
+  season   String
+  format   String @default("PPR")
+  teamCount Int   @default(0) // ADP is format-sensitive; 10-team ADP != 12-team ADP. 0 = unspecified.
+
+  adp          Float
+  adpStdDev    Float?
+  minPick      Float?
+  maxPick      Float?
+  timesDrafted Int?
+
+  capturedAt DateTime @default(now())
+
+  @@unique([playerId, source, season, format, teamCount, capturedAt])
+  @@index([source, season])
+}
+
+/// Roster percentage and add/drop velocity. Drives "market hasn't caught on
+/// yet" detection for the waiver module and late-round buzz during the draft.
+model MarketTrend {
+  id       String @id @default(cuid())
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  source   String // sleeper | fantasypros
+  season   String
+  week     Int    @default(0) // 0 = not week-scoped (rolling trend window)
+
+  rosteredPct   Float?
+  startedPct    Float?
+  addCount      Int?
+  dropCount     Int?
+  tradeCount    Int?
+  lookbackHours Int    @default(24)
+
+  capturedAt DateTime @default(now())
+
+  @@unique([playerId, source, season, week, lookbackHours, capturedAt])
+  @@index([source, season, week])
+}
+
+// ===========================================================================
+// SECTION 5 — IN-SEASON USAGE (Phase 9 target; written by usage providers)
+// One row per player/week/source. Never overwritten by a later week.
+// ===========================================================================
+
+model PlayerWeekStat {
+  id       String @id @default(cuid())
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  season   String
+  week     Int
+  seasonType String @default("REG") // PRE | REG | POST
+  source   String // nflverse | ftn | pfr | manual
+
+  teamId     String?
+  opponentId String?
+  homeAway   String?
+  gameId     String?
+  active     Boolean @default(true)
+
+  // --- Snaps -------------------------------------------------------------
+  snapsOffense     Int?
+  teamSnapsOffense Int?
+  snapPct          Float?
+  snapsSpecial     Int?
+
+  // --- Routes ------------------------------------------------------------
+  routesRun         Int?
+  teamDropbacks     Int?
+  routeParticipation Float? // routesRun / teamDropbacks
+  yprr              Float?
+
+  // --- Receiving ---------------------------------------------------------
+  targets          Int?
+  targetShare      Float?
+  firstReadTargets Int?
+  firstReadShare   Float?
+  receptions       Int?
+  recYards         Float?
+  recTds           Int?
+  airYards         Float?
+  airYardsShare    Float?
+  adot             Float?
+  wopr             Float?
+  yac              Float?
+
+  // --- Rushing -----------------------------------------------------------
+  carries     Int?
+  rushYards   Float?
+  rushTds     Int?
+  rushShare   Float?
+  yardsBeforeContact Float?
+
+  // --- Situational usage (the breakout signals) --------------------------
+  thirdDownSnaps   Int?
+  thirdDownRoutes  Int?
+  thirdDownTargets Int?
+  twoMinuteSnaps   Int?
+  twoMinuteRoutes  Int?
+  twoMinuteTargets Int?
+  goalLineCarries  Int?
+  goalLineTargets  Int?
+  redZoneCarries   Int?
+  redZoneTargets   Int?
+  redZoneSnapPct   Float?
+
+  // --- Passing -----------------------------------------------------------
+  passAttempts  Int?
+  completions   Int?
+  passYards     Float?
+  passTds       Int?
+  interceptions Int?
+  sacksTaken    Int?
+  rushAttemptsQb Int?
+
+  // --- Fantasy -----------------------------------------------------------
+  fantasyPointsPpr  Float?
+  fantasyPointsHalf Float?
+  fantasyPointsStd  Float?
+  expectedPointsPpr Float? // xFP — points an average player earns on this usage
+
+  /// Personnel-group usage: { "11": 0.62, "12": 0.24, "21": 0.09, ... }
+  personnelJson String?
+  /// Alignment split: { "X": 0.4, "Z": 0.1, "slot": 0.42, "bigSlot": 0.05,
+  /// "inline": 0, "backfield": 0.03, "wide": 0.55 }
+  alignmentJson String?
+  rawJson       String?
+
+  capturedAt DateTime @default(now())
+
+  @@unique([playerId, season, week, seasonType, source])
+  @@index([season, week])
+  @@index([playerId, season])
+}
+
+/// Team-level weekly context: pace, pass rate over expected, game environment,
+/// starting QB, offensive line. Start/sit and matchup analysis read this.
+model TeamWeekContext {
+  id     String @id @default(cuid())
+  teamId String
+  team   NflTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  season String
+  week   Int
+  seasonType String @default("REG")
+  source String
+
+  opponentId    String?
+  plays         Int?
+  passRate      Float?
+  proe          Float? // pass rate over expected
+  neutralPassRate Float?
+  secondsPerPlay Float?
+  pointsFor     Float?
+  pointsAgainst Float?
+  impliedTotal  Float?
+  spread        Float?
+  gameTotal     Float?
+  kickoffAtMs   BigInt?
+
+  starterQbId    String?
+  olStartersJson String? // string[] of playerIds LT..RT
+  olContinuity   Float?
+  injuriesJson   String?
+  rawJson        String?
+
+  capturedAt DateTime @default(now())
+
+  @@unique([teamId, season, week, seasonType, source])
+  @@index([season, week])
+}
+
+// ===========================================================================
+// SECTION 6 — ROLE / STATUS CHANGE TRACKING (append-only event streams)
+// ===========================================================================
+
+model DepthChartEntry {
+  id       String @id @default(cuid())
+  teamId   String
+  team     NflTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  playerId String
+  player   Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  position String // RB, WR, TE, QB
+  /// Functional role slot, not just ordinal: WR-X, WR-Z, WR-SLOT, RB-EARLY,
+  /// RB-PASS, RB-GL, TE-INLINE. Start/sit matchup logic keys off this.
+  roleSlot String?
+  rank     Int
+  source   String
+  season   String
+  week     Int?
+  effectiveAt DateTime
+  capturedAt  DateTime @default(now())
+
+  @@index([teamId, position, effectiveAt])
+  @@index([playerId, effectiveAt])
+}
+
+model InjuryReport {
+  id       String @id @default(cuid())
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  teamId   String?
+  season   String
+  week     Int?
+  status      String? // Questionable | Doubtful | Out | IR | PUP | NFI | Healthy
+  designation String?
+  bodyPart    String?
+  note        String?
+  expectedReturnWeek Int?
+  source      String
+  reportedAt  DateTime
+  capturedAt  DateTime @default(now())
+
+  @@index([playerId, reportedAt])
+  @@index([season, week])
+}
+
+model PracticeParticipation {
+  id       String @id @default(cuid())
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  season   String
+  week     Int
+  day      String // WED | THU | FRI | SAT
+  participation String // DNP | LIMITED | FULL
+  note     String?
+  source   String
+  reportedAt DateTime
+  capturedAt DateTime @default(now())
+
+  @@unique([playerId, season, week, day, source])
+  @@index([season, week])
+}
+
+/// Coaching, coordinator, QB, offensive-line and scheme changes. These are the
+/// events that invalidate prior-season usage priors, so they are first-class.
+model TeamContextChange {
+  id     String @id @default(cuid())
+  teamId String
+  team   NflTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  changeType String // HEAD_COACH | OC | DC | QB | OL | SCHEME | PLAY_CALLER
+  season String
+  week   Int?
+  fromValue   String?
+  toValue     String?
+  description String?
+  impact      String? // HIGH | MEDIUM | LOW
+  source      String
+  effectiveAt DateTime
+  capturedAt  DateTime @default(now())
+
+  @@index([teamId, effectiveAt])
+  @@index([season, week])
+}
+
+// ===========================================================================
+// SECTION 7 — EVIDENCE + RECOMMENDATION BACKBONE
+// Every module (draft now; waiver / breakout / start-sit / trade later) writes
+// Recommendations justified by Evidence. This is the part that must not be
+// draft-specific.
+// ===========================================================================
+
+model Evidence {
+  id          String @id @default(cuid())
+  subjectType String // PLAYER | TEAM | LEAGUE | MEMBER | MATCHUP
+  subjectId   String
+  /// Denormalised FKs so the common "all evidence for this player" query is a
+  /// plain indexed lookup instead of a polymorphic scan.
+  playerId    String?
+  player      Player? @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  teamId      String?
+
+  evidenceType String // CAMP_REPORT | BEAT_REPORT | COACH_QUOTE | USAGE_TREND |
+                      // DEPTH_CHART_MOVE | INJURY | TRANSACTION | PRESEASON_USAGE |
+                      // MARKET_MOVE | PROJECTION_DELTA | SCHEME_CHANGE | MANUAL_NOTE
+  season String?
+  week   Int?
+
+  headline   String
+  body       String?
+  sourceName String?
+  sourceUrl  String?
+  author     String?
+
+  /// 0..1 — how much we trust this. Beat reporter with a track record > rumour.
+  confidence Float  @default(0.5)
+  /// -1..1 — negative for value-destroying news.
+  sentiment  Float  @default(0)
+  impact     String @default("MEDIUM") // HIGH | MEDIUM | LOW
+  tagsJson   String?
+  payloadJson String? // structured backing data, e.g. the snap delta computed
+
+  isUserEntered Boolean @default(false)
+  isPinned      Boolean @default(false)
+  isStale       Boolean @default(false)
+
+  observedAt DateTime
+  capturedAt DateTime @default(now())
+
+  links RecommendationEvidence[]
+
+  @@index([playerId, observedAt])
+  @@index([subjectType, subjectId])
+  @@index([evidenceType, observedAt])
+  @@index([season, week])
+}
+
+model Recommendation {
+  id     String @id @default(cuid())
+  /// DRAFT | KEEPER | WAIVER | BREAKOUT | START_SIT | TRADE | ROS |
+  /// INJURY_REPLACEMENT | LEAGUE_MONITOR
+  module String
+  subjectType String // PLAYER | TRADE_PACKAGE | LINEUP | ROSTER
+  subjectId   String
+  playerId    String?
+  player      Player? @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  leagueId    String?
+  league      League? @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  season      String
+  week        Int?
+
+  /// Module-specific bucket. For WAIVER these are exactly the spec's classes:
+  /// IMMEDIATE_STARTER | EARLY_BREAKOUT | INJURY_AWAY_STASH | ROLE_GROWTH_STASH |
+  /// SHORT_TERM_REPLACEMENT | HIGH_UPSIDE_BENCH | LOW_PRIORITY_SPEC | AVOID.
+  /// For DRAFT: TARGET | VALUE | REACH | AVOID | HANDCUFF | UPSIDE_SWING.
+  classification String
+  score      Float // sortable priority within the module
+  confidence Float  @default(0.5)
+  headline   String
+  rationale  String?
+  detailJson String?
+
+  generatedBy String @default("RULES") // RULES | AI | MANUAL
+  runId       String?
+  isDismissed Boolean @default(false)
+  userNote    String?
+
+  createdAt DateTime @default(now())
+
+  evidence RecommendationEvidence[]
+
+  @@index([module, season, week])
+  @@index([playerId, module])
+  @@index([leagueId, module, score])
+}
+
+model RecommendationEvidence {
+  recommendationId String
+  recommendation   Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  evidenceId       String
+  evidence         Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  weight           Float @default(1.0)
+
+  @@id([recommendationId, evidenceId])
+}
+
+// ===========================================================================
+// SECTION 8 — VALUATION
+// Every computation is a run, so a draft-day number can always be traced back
+// to the inputs and settings that produced it.
+// ===========================================================================
+
+model ValuationRun {
+  id       String @id @default(cuid())
+  leagueId String
+  league   League @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  season   String
+  /// DRAFT | KEEPER | ROS | WEEKLY — same engine, different inputs.
+  scope    String @default("DRAFT")
+  week     Int?
+  label    String?
+  /// Projection sources, weights, replacement-level method, risk settings.
+  paramsJson String?
+  playerCount Int @default(0)
+  isActive    Boolean @default(false) // the run the UI reads from
+  createdAt   DateTime @default(now())
+
+  valuations PlayerValuation[]
+
+  @@index([leagueId, season, scope])
+}
+
+model PlayerValuation {
+  id       String @id @default(cuid())
+  runId    String
+  run      ValuationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  position String
+
+  projPoints        Float
+  floorPoints       Float?
+  ceilingPoints     Float?
+  replacementPoints Float
+  vorp              Float
+  /// Value over next available at your next pick — the number that actually
+  /// decides a draft pick. Recomputed live as the board changes.
+  vona              Float?
+  auctionValue      Float?
+
+  tier          Int
+  positionRank  Int
+  overallRank   Int
+  scarcityIndex Float? // how fast this position's VORP falls off right now
+  riskScore     Float? // 0..1, injury + role volatility
+  upsideScore   Float?
+  /// For keeper scope: surplus vs. what that draft pick would otherwise return.
+  keeperSurplus Float?
+  adp           Float?
+  adpDelta      Float? // overallRank - adp; negative = market undervalues him
+
+  detailJson String?
+
+  @@unique([runId, playerId])
+  @@index([runId, position, vorp])
+  @@index([playerId])
+}
+
+// ===========================================================================
+// SECTION 9 — PERSONAL BOARD (manual overrides are first-class)
+// ===========================================================================
+
+model BoardEntry {
+  id       String @id @default(cuid())
+  leagueId String
+  league   League @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  season   String
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  /// Manual overrides. Null means "use the computed value". The UI always shows
+  /// which of the two it is displaying.
+  userRank  Float?
+  userTier  Int?
+  userProjPoints Float?
+  targetRound    Int?
+  maxBidPct      Float?
+
+  status      String @default("NEUTRAL") // MUST_HAVE | TARGET | LIKE | NEUTRAL | AVOID | DO_NOT_DRAFT
+  colorTag    String?
+  note        String?
+  tagsJson    String? // ["zero-rb", "handcuff:CMC", "late-qb"]
+  isDoNotDraft Boolean @default(false)
+  isSleeper    Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([leagueId, season, playerId])
+  @@index([leagueId, season, status])
+}
+
+// ===========================================================================
+// SECTION 10 — MOCK DRAFTS / SIMULATION
+// ===========================================================================
+
+model MockDraft {
+  id       String @id @default(cuid())
+  leagueId String
+  league   League @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  season   String
+  name     String
+  myDraftSlot Int
+  teams    Int
+  rounds   Int
+  /// BALANCED | ZERO_RB | HERO_RB | ROBUST_RB | LATE_QB | EARLY_TE | BPA
+  strategy String @default("BALANCED")
+  iterations Int   @default(200)
+  /// ADP noise sigma, need weighting, keeper handling, valuation run id.
+  paramsJson String?
+  summaryJson String? // aggregate outcome: avg starting-lineup points, pos counts
+  createdAt DateTime @default(now())
+
+  picks        MockPick[]
+  availability MockAvailability[]
+
+  @@index([leagueId, season])
+}
+
+/// Picks from a single representative simulation (stored for review). Monte
+/// Carlo aggregates go to MockAvailability instead of storing N full drafts.
+model MockPick {
+  id     String @id @default(cuid())
+  mockDraftId String
+  mockDraft   MockDraft @relation(fields: [mockDraftId], references: [id], onDelete: Cascade)
+  iteration Int @default(0)
+  pickNo    Int
+  round     Int
+  draftSlot Int
+  playerId  String?
+  player    Player? @relation(fields: [playerId], references: [id])
+  isMine    Boolean @default(false)
+
+  @@index([mockDraftId, iteration, pickNo])
+}
+
+/// P(player is still on the board at pick N), aggregated across iterations.
+/// This is the core planning output: "if I take a WR at 1.04, is my RB still
+/// there at 2.07?"
+model MockAvailability {
+  id       String @id @default(cuid())
+  mockDraftId String
+  mockDraft   MockDraft @relation(fields: [mockDraftId], references: [id], onDelete: Cascade)
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  pickNo   Int
+  availabilityPct Float
+  avgPickTaken    Float?
+  timesTaken      Int @default(0)
+
+  @@unique([mockDraftId, playerId, pickNo])
+  @@index([mockDraftId, pickNo])
+}
+
+// ===========================================================================
+// SECTION 11 — AI SUMMARIES + OPS
+// ===========================================================================
+
+model AiSummary {
+  id          String @id @default(cuid())
+  module      String // DRAFT | PLAYER | KEEPER | LEAGUE | MOCK | WAIVER | START_SIT | TRADE
+  subjectType String
+  subjectId   String
+  season      String
+  week        Int    @default(0) // 0 = season-scope
+
+  model       String
+  /// Hash of the rendered prompt. Lets us reuse a summary when nothing that
+  /// feeds it has changed, and invalidate precisely when it has.
+  inputHash   String
+  content     String
+  tokensIn    Int?
+  tokensOut   Int?
+  isStale     Boolean @default(false)
+  createdAt   DateTime @default(now())
+
+  @@unique([module, subjectType, subjectId, season, week, inputHash])
+  @@index([module, subjectId])
+}
+
+/// Registry of where analysis inputs come from.
+///
+/// Every Ranking / Projection / AdpSnapshot / Evidence row carries a `source`
+/// string; this table is what those strings mean, how much they are trusted,
+/// and how heavily they count in the blend. Adding a new site or a specific
+/// writer is a row here plus (for file-based sources) a CSV drop — no code
+/// change. Disabling a source re-weights the blend without deleting history,
+/// so you can turn something off and still see what it used to say.
+model DataSource {
+  id    String @id @default(cuid())
+  /// The literal value written to `source` columns. Stable — renaming this
+  /// orphans existing rows, so the UI edits `label` instead.
+  key   String @unique
+  label String
+  /// PROJECTIONS | RANKINGS | ADP | USAGE | NEWS | ANALYST | MARKET
+  kind    String
+  /// CSV | SLEEPER | HTTP_JSON | MANUAL — how data arrives.
+  adapter String @default("CSV")
+
+  enabled Boolean @default(true)
+  /// Blend weight for PROJECTIONS/RANKINGS/ADP. 0 excludes without deleting.
+  weight  Float   @default(1)
+  /// 0..1 default confidence for Evidence this source produces. An analyst you
+  /// rate highly starts at a higher confidence than a random aggregator.
+  trust   Float   @default(0.5)
+
+  /// Free-text: who this is and why you trust them. Shown in the UI and fed to
+  /// the AI summariser so its write-ups reflect your own source hierarchy.
+  notes    String?
+  url      String?
+  /// Adapter-specific settings (endpoint, header mappings, auth env var name).
+  configJson String?
+
+  isBuiltIn      Boolean   @default(false)
+  lastImportedAt DateTime?
+  lastRecordCount Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind, enabled])
+}
+
+model SyncRun {
+  id        String @id @default(cuid())
+  provider  String // sleeper | fantasypros | ftn | nflverse | internal
+  job       String // players | league | draft | market | usage | valuation
+  status    String @default("RUNNING") // RUNNING | SUCCESS | FAILED | PARTIAL
+  season    String?
+  week      Int?
+  recordsIn Int @default(0)
+  recordsWritten Int @default(0)
+  error      String?
+  detailJson String?
+  startedAt  DateTime @default(now())
+  finishedAt DateTime?
+
+  @@index([provider, job, startedAt])
+}
+
+/// Key/value app configuration. Kept in the DB (not just .env) so the settings
+/// page can change league id, my roster, scoring tweaks and valuation defaults
+/// without editing files or restarting.
+model AppSetting {
+  key       String @id
+  valueJson String
+  updatedAt DateTime @updatedAt
+}

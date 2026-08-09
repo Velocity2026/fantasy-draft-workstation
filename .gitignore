@@ -1,0 +1,22 @@
+node_modules/
+.next/
+out/
+build/
+.DS_Store
+*.pem
+npm-debug.log*
+.env
+.env*.local
+next-env.d.ts
+*.tsbuildinfo
+
+# SQLite database + backups
+prisma/*.db
+prisma/*.db-journal
+prisma/*.db-shm
+prisma/*.db-wal
+backups/
+
+# Local data drops (FantasyPros / FTN exports)
+data/incoming/
+.cache/
