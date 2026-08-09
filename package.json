@@ -23,6 +23,7 @@
     "backfill": "tsx scripts/backfill-weekly.ts",
     "sync:history": "tsx scripts/sync-history.ts",
     "sync:all": "tsx scripts/sync-all.ts",
+    "project": "tsx scripts/build-projections.ts",
     "value": "tsx scripts/run-valuation.ts",
     "import:csv": "tsx scripts/import-csv.ts"
   },

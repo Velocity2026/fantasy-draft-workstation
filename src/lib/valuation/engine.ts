@@ -83,6 +83,14 @@ export async function runValuation(params: ValuationParams): Promise<SyncResult 
       const shape = deriveRosterShape(rosterPositions, league.totalRosters);
       const format = (league.scoringType ?? 'PPR') as ScoringFormat;
 
+      // If no real projections exist yet, the rank curve is all we have and
+      // an approximate board beats an empty one. Once any real projection
+      // source has data, the curve is switched off entirely.
+      const realProjectionCount = await prisma.projection.count({
+        where: { season: params.season, scope: 'SEASON', source: { not: 'baseline' } },
+      });
+      const allowBaselineFallback = realProjectionCount === 0;
+
       const inputs = await assembleInputs({
         season: params.season,
         scope,
@@ -90,6 +98,7 @@ export async function runValuation(params: ValuationParams): Promise<SyncResult 
         format,
         weights,
         teamCount: league.totalRosters,
+        allowBaselineFallback,
       });
 
       // --- Replacement level -------------------------------------------------
@@ -251,6 +260,7 @@ async function assembleInputs(args: {
   format: ScoringFormat;
   weights: Record<string, number>;
   teamCount: number;
+  allowBaselineFallback: boolean;
 }): Promise<PlayerInput[]> {
   const players = await prisma.player.findMany({
     where: { position: { in: [...SKILL_POSITIONS] }, active: true },
@@ -268,20 +278,39 @@ async function assembleInputs(args: {
 
   const projectionScope = args.scope === 'WEEKLY' ? 'WEEKLY' : args.scope === 'ROS' ? 'ROS' : 'SEASON';
 
-  // Latest projection per (player, source). Ordered so the first row seen for a
-  // key is the freshest.
-  const projections = await prisma.projection.findMany({
+  // Projections are read as the latest *batch* per source, not the latest row
+  // per player — the same fix applied to ADP after the same bug appeared
+  // there. A source's tables are append-only, so a player correctly absent
+  // from the newest run of a source still has an older row sitting in the
+  // table; latest-per-player would resurrect him with stale, and possibly
+  // now-wrong, points (this is exactly how Antonio Brown stayed on the board
+  // after the staleness gate should have dropped him).
+  const projectionBatches = await prisma.projection.groupBy({
+    by: ['source'],
     where: { season: args.season, scope: projectionScope, week: args.week ?? 0 },
-    orderBy: { capturedAt: 'desc' },
-    select: {
-      playerId: true,
-      source: true,
-      fantasyPoints: true,
-      floorPoints: true,
-      ceilingPoints: true,
-      capturedAt: true,
-    },
+    _max: { capturedAt: true },
   });
+
+  const projections = projectionBatches.length
+    ? await prisma.projection.findMany({
+        where: {
+          season: args.season,
+          scope: projectionScope,
+          week: args.week ?? 0,
+          OR: projectionBatches
+            .filter((b) => b._max.capturedAt)
+            .map((b) => ({ source: b.source, capturedAt: b._max.capturedAt as Date })),
+        },
+        select: {
+          playerId: true,
+          source: true,
+          fantasyPoints: true,
+          floorPoints: true,
+          ceilingPoints: true,
+          capturedAt: true,
+        },
+      })
+    : [];
 
   const latestProjection = new Map<string, Map<string, (typeof projections)[number]>>();
   for (const p of projections) {
@@ -414,8 +443,16 @@ async function assembleInputs(args: {
       }
     }
 
-    if (points === null) {
-      // No projection — fall back to the rank-derived curve.
+    if (points === null && args.allowBaselineFallback) {
+      // No projection from any source. The rank-derived curve is only used
+      // when the database holds no real projections at all — on a fresh
+      // install, so the board is not empty.
+      //
+      // Once real projections exist, a player without one is deliberately left
+      // OFF the board rather than given a curve value. That gate is what keeps
+      // retired players out: Sleeper's `active` flag stays true for them and
+      // its `search_rank` still ranks them, so filtering on either put ~76% of
+      // the board on players with no snaps in the last two seasons.
       const order = fallbackOrder.get(position) ?? [];
       const idx = order.indexOf(player.id);
       if (idx >= 0) {
