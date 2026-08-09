@@ -150,6 +150,7 @@ export const DRAFT_STRATEGIES = [
   'LATE_QB',
   'EARLY_TE',
   'BPA',
+  'RATCLIFFE_PROCESS',
 ] as const;
 export type DraftStrategy = (typeof DRAFT_STRATEGIES)[number];
 
@@ -161,6 +162,7 @@ export const DRAFT_STRATEGY_LABELS: Record<DraftStrategy, string> = {
   LATE_QB: 'Late QB',
   EARLY_TE: 'Early elite TE',
   BPA: 'Strict best player available',
+  RATCLIFFE_PROCESS: "Ratcliffe's Process (1QB)",
 };
 
 // --- Functional roles (start/sit + matchup analysis, Phase 11) -------------

@@ -186,6 +186,7 @@ function applyStrategy(
   strategy: DraftStrategy,
 ) {
   const rbCount = state.counts.RB ?? 0;
+  const wrCount = state.counts.WR ?? 0;
   const totalPicks = state.players.length;
 
   switch (strategy) {
@@ -218,6 +219,9 @@ function applyStrategy(
     case 'BPA':
       for (const pos of SKILL_POSITIONS) needs[pos] = 1;
       break;
+    case 'RATCLIFFE_PROCESS':
+      applyRatcliffeProcess(needs, totalPicks, rbCount, wrCount);
+      break;
     case 'BALANCED':
     default:
       break;
@@ -231,6 +235,69 @@ function applyStrategy(
   for (const [pos, max] of Object.entries(cap) as [SkillPosition, number][]) {
     if ((state.counts[pos] ?? 0) >= max) needs[pos] *= 0.15;
   }
+}
+
+/**
+ * Jeff Ratcliffe's "The Process" round-by-round targets, transcribed from his
+ * 2026 Draft Day Checklist (pages 47-49) for a 1QB league — Craig's format.
+ * The Superflex-specific rules in the source (QB2/QB3 windows) are omitted as
+ * inapplicable here.
+ *
+ *   R1-2   Best player available. Balance early: if your first pick was a WR,
+ *          lean RB in round 2, and vice versa.
+ *   R3-4   "This is wideout territory. Load up."
+ *   R5     "Attach RB in 5" — a running back in this range specifically.
+ *   R6-10  Target upside RBs (explosiveness over volume) while continuing to
+ *          add WR depth. Explicitly do not force TE or QB in this range —
+ *          "there's going to be upside in the late rounds that offers much
+ *          more bang for your buck."
+ *   R11-15 Late-round QB and TE, but only ones with real top-10 upside — not
+ *          floor plays. High-upside RB shots.
+ *   R16+   Best upside remaining; no positional bias.
+ *
+ * Also his "final roster targets" for a 1QB league (1 QB, 5 RB, 7 WR, 1 TE) are
+ * what the >=1.0 multipliers below are shaped to converge toward by the end of
+ * a 15-round draft, rather than being enforced as a hard target directly.
+ */
+function applyRatcliffeProcess(
+  needs: Record<SkillPosition, number>,
+  totalPicks: number,
+  rbCount: number,
+  wrCount: number,
+) {
+  const round = totalPicks + 1;
+
+  if (round <= 2) {
+    // Best player available — no bias yet, except balancing the first two picks.
+    if (totalPicks === 1) {
+      if (rbCount === 0 && wrCount >= 1) needs.RB *= 1.2;
+      if (wrCount === 0 && rbCount >= 1) needs.WR *= 1.2;
+    }
+    needs.QB *= 0.5;
+    needs.TE *= 0.5;
+  } else if (round <= 4) {
+    needs.WR *= 1.4; // "hammer WRs in 3 & 4"
+    needs.QB *= 0.4;
+    needs.TE *= 0.5;
+  } else if (round === 5) {
+    needs.RB *= 1.35; // "attach RB in 5"
+    needs.QB *= 0.4;
+    needs.TE *= 0.5;
+  } else if (round <= 10) {
+    needs.RB *= 1.2; // upside RBs
+    needs.WR *= 1.1; // keep stacking WR
+    needs.QB *= 0.3; // "don't force QB"
+    needs.TE *= 0.3; // "don't force TE"
+  } else if (round <= 15) {
+    // Late QB/TE now genuinely in play, but only for real upside — the
+    // player's own upsideScore does that filtering; here we just stop
+    // suppressing the position.
+    needs.RB *= 1.15;
+    needs.QB *= 1.0;
+    needs.TE *= 1.0;
+  }
+  // Round 16+: "throw darts, not hail marys" — no positional bias, handled by
+  // leaving every multiplier at its computed baseline.
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +317,20 @@ export function buildSuggestions(ctx: AdvisorContext, limit = 40): Suggestion[] 
     const atPos = available.filter((p) => p.position === pos);
     baselineAtNext[pos] = nextPick === null ? 0 : expectedBestAvailable(atPos, nextPick);
   }
+
+  // Ratcliffe's Process, "Be conscious of correlations": in a non-best-ball
+  // league, stacking skill players (RB/WR/TE — not QB) from the same NFL team
+  // concentrates your roster's risk on that one offense — one bad week or one
+  // injury to the quarterback hurts two of your players at once. This is a
+  // soft nudge, not a rule: it only discounts, never zeroes out, a player.
+  const myTeamsOnRoster =
+    ctx.strategy === 'RATCLIFFE_PROCESS'
+      ? new Set(
+          ctx.board
+            .filter((p) => ctx.myRosterState.players.some((mp) => mp.playerId === p.playerId) && p.teamId)
+            .map((p) => p.teamId as string),
+        )
+      : null;
 
   const suggestions: Suggestion[] = available.map((player) => {
     const pos = player.position as SkillPosition;
@@ -284,6 +365,11 @@ export function buildSuggestions(ctx: AdvisorContext, limit = 40): Suggestion[] 
     } else if (override?.status === 'AVOID') {
       score *= 0.6;
       reasons.push('Flagged avoid.');
+    }
+
+    if (myTeamsOnRoster && pos !== 'QB' && player.teamId && myTeamsOnRoster.has(player.teamId)) {
+      score *= 0.85;
+      reasons.push(`Same-team stack: you already roster a skill player from ${player.teamId}.`);
     }
 
     // --- Explanations -------------------------------------------------------
