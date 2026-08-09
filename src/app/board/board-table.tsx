@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { cn, fmt } from '@/lib/utils';
 import { BOARD_STATUS_LABELS, BOARD_STATUSES, SKILL_POSITIONS } from '@/lib/enums';
 import { Badge, Button, Input, Select, Textarea } from '@/components/ui/primitives';
-import { PosBadge, TierChip, InjuryTag, ValueDelta, BaselineFlag, TeamTag } from '@/components/player-bits';
+import { PosBadge, TierChip, InjuryTag, ValueDelta, BaselineFlag, AvoidFlag, TeamTag } from '@/components/player-bits';
 import { saveBoardEntry, clearBoardEntry } from '../actions';
 import type { ValuationRowWithPlayer } from '@/lib/valuation/engine';
 
@@ -162,6 +162,7 @@ export function BoardTable({
                         <TeamTag teamId={row.teamId} />
                         <InjuryTag status={row.injuryStatus} />
                         <BaselineFlag isBaseline={row.isBaseline} />
+                        <AvoidFlag sources={row.avoidSources} />
                         {isKeeper ? (
                           <Badge variant="outline" className="text-[10px]">
                             kept

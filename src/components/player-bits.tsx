@@ -73,6 +73,24 @@ export function ValueDelta({ delta }: { delta: number | null | undefined }) {
   );
 }
 
+/**
+ * Flags a player whose points were discounted because a trusted analyst
+ * explicitly listed him as "do not draft." The discount is real and visible
+ * on the number, not a silent adjustment — hover to see which source(s)
+ * flagged him.
+ */
+export function AvoidFlag({ sources }: { sources: string[] }) {
+  if (!sources.length) return null;
+  return (
+    <span
+      title={`Flagged "do not draft" by ${sources.join(', ')} — points discounted accordingly.`}
+      className="cursor-help rounded border border-rose-500/40 bg-rose-500/10 px-1 py-0.5 text-[10px] font-semibold uppercase text-rose-600 dark:text-rose-400"
+    >
+      avoid
+    </span>
+  );
+}
+
 /** Flags a number that came from the fallback curve rather than a real source. */
 export function BaselineFlag({ isBaseline }: { isBaseline: boolean }) {
   if (!isBaseline) return null;

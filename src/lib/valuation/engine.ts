@@ -63,6 +63,8 @@ interface PlayerInput {
   adpStdDev: number | null;
   consensusRank: number | null;
   positionRankFromSource: number | null;
+  avoidFlag: boolean;
+  avoidSources: string[];
 }
 
 export async function runValuation(params: ValuationParams): Promise<SyncResult & { runId: string }> {
@@ -219,6 +221,8 @@ export async function runValuation(params: ValuationParams): Promise<SyncResult 
                 isBaseline: p.isBaseline,
                 sources: p.sources,
                 adpStdDev: p.adpStdDev,
+                avoidFlag: p.avoidFlag,
+                avoidSources: p.avoidSources,
               }),
             };
           }),
@@ -398,6 +402,42 @@ async function assembleInputs(args: {
     fallbackOrder.set(pos, ordered);
   }
 
+  // "Do not draft" evidence (written by rank-to-projection.ts for a source's
+  // avoid-tier players) intentionally does NOT become a fake projection row —
+  // inventing a points number to represent a qualitative warning would be
+  // fabricating data. But that means, on its own, the flag has zero effect on
+  // the actual ranked board: a player an analyst explicitly warned against can
+  // still out-rank players that analyst rates highly, because nothing ever
+  // discounts his blended points. That is not a hypothetical — it is exactly
+  // how Wan'Dale Robinson (on Ratcliffe's do-not-draft list, so no Ratcliffe
+  // projection to pull him down) ranked ahead of four receivers Ratcliffe
+  // rates above him. This closes that gap: a real, bounded discount, scaled by
+  // how much the flagging source is trusted, applied directly to points.
+  const avoidEvidence = await prisma.evidence.findMany({
+    where: {
+      season: args.season,
+      evidenceType: 'MANUAL_NOTE',
+      sentiment: -1,
+      impact: 'HIGH',
+      isUserEntered: false,
+      headline: { endsWith: ': do not draft' },
+      playerId: { not: null },
+    },
+    select: { playerId: true, sourceName: true, confidence: true },
+  });
+  const avoidByPlayer = new Map<string, { maxTrust: number; sources: string[] }>();
+  for (const e of avoidEvidence) {
+    if (!e.playerId) continue;
+    const entry = avoidByPlayer.get(e.playerId) ?? { maxTrust: 0, sources: [] };
+    entry.maxTrust = Math.max(entry.maxTrust, e.confidence);
+    if (e.sourceName) entry.sources.push(e.sourceName);
+    avoidByPlayer.set(e.playerId, entry);
+  }
+  // Capped at 35% — a strong nudge, not a veto. The player is still on the
+  // board and still draftable; he just no longer floats above players the
+  // same analyst likes better.
+  const AVOID_MAX_DISCOUNT = 0.35;
+
   return players.map((player) => {
     const position = player.position as SkillPosition;
     const bySource = latestProjection.get(player.id);
@@ -443,6 +483,14 @@ async function assembleInputs(args: {
       }
     }
 
+    const avoid = avoidByPlayer.get(player.id);
+    if (points !== null && avoid) {
+      const discount = Math.min(AVOID_MAX_DISCOUNT, AVOID_MAX_DISCOUNT * avoid.maxTrust);
+      points *= 1 - discount;
+      if (floor !== null) floor *= 1 - discount;
+      if (ceiling !== null) ceiling *= 1 - discount;
+    }
+
     if (points === null && args.allowBaselineFallback) {
       // No projection from any source. The rank-derived curve is only used
       // when the database holds no real projections at all — on a fresh
@@ -485,6 +533,8 @@ async function assembleInputs(args: {
       adpStdDev: adp?.adpStdDev ?? null,
       consensusRank: ranking?.overallRank ?? null,
       positionRankFromSource: ranking?.positionRank ?? null,
+      avoidFlag: Boolean(avoid),
+      avoidSources: avoid?.sources ?? [],
     };
   });
 }
@@ -605,6 +655,8 @@ export interface ValuationRowWithPlayer {
   upsideScore: number | null;
   scarcityIndex: number | null;
   isBaseline: boolean;
+  avoidFlag: boolean;
+  avoidSources: string[];
 }
 
 /** Load a full valuation board, joined to player identity, ordered by VORP. */
@@ -640,6 +692,8 @@ export async function loadBoard(runId: string): Promise<ValuationRowWithPlayer[]
     upsideScore: r.upsideScore,
     scarcityIndex: r.scarcityIndex,
     isBaseline: readJson<{ isBaseline?: boolean }>(r.detailJson, {}).isBaseline ?? false,
+    avoidFlag: readJson<{ avoidFlag?: boolean }>(r.detailJson, {}).avoidFlag ?? false,
+    avoidSources: readJson<{ avoidSources?: string[] }>(r.detailJson, {}).avoidSources ?? [],
   }));
 }
 
