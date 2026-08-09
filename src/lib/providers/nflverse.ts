@@ -167,7 +167,11 @@ export const nflverse = {
    * therefore validated for a `week` column before being accepted.
    */
   async weekly(season: number, opts?: NflverseFetchOptions): Promise<NflverseWeeklyRow[]> {
+    // nflverse moved these assets to a `stats_player` release; the older
+    // `player_stats` release still holds historical seasons but stops before
+    // the most recent one. Try the newer home first.
     const candidates = [
+      `stats_player/stats_player_week_${season}.csv`,
       `player_stats/stats_player_week_${season}.csv`,
       `player_stats/player_stats_${season}.csv`,
     ];
