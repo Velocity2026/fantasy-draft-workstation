@@ -158,24 +158,37 @@ export const nflverse = {
   },
 
   /**
-   * Weekly player stats for a season. nflverse renamed these assets partway
-   * through its history, so try the current name and fall back to the legacy
-   * one rather than failing the whole backfill on one season.
+   * Weekly player stats for a season.
+   *
+   * Asset naming changed across nflverse generations, so several names are
+   * tried. Order matters and is easy to get wrong: `stats_player_reg_*` is the
+   * season-AGGREGATE file — same columns, no `week` — so putting it first
+   * silently yields rows that are all discarded downstream. Each candidate is
+   * therefore validated for a `week` column before being accepted.
    */
   async weekly(season: number, opts?: NflverseFetchOptions): Promise<NflverseWeeklyRow[]> {
     const candidates = [
-      `player_stats/stats_player_reg_${season}.csv`,
+      `player_stats/stats_player_week_${season}.csv`,
       `player_stats/player_stats_${season}.csv`,
     ];
     let lastError: unknown;
+
     for (const path of candidates) {
       try {
         const rows = await fetchCsv<NflverseWeeklyRow>(path, opts);
-        if (rows.length) return rows;
+        if (!rows.length) continue;
+        if (!('week' in rows[0])) {
+          lastError = new NflverseError(
+            `${path} has no 'week' column — that is the season-aggregate file, not weekly.`,
+          );
+          continue;
+        }
+        return rows;
       } catch (error) {
         lastError = error;
       }
     }
+
     throw lastError instanceof Error
       ? lastError
       : new NflverseError(`No weekly stats found for ${season}`);
