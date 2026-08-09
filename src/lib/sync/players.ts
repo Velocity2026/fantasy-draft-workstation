@@ -1,9 +1,11 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { NFL_TEAMS } from '../data/nfl-teams';
 import { sleeper, normalisePosition, parseHeightInches, type SleeperPlayer } from '../providers/sleeper';
 import { POSITIONS } from '../enums';
 import { normaliseName } from '../utils';
 import { writeJson } from '../json';
+import { getConfig } from '../config';
 import { withSyncRun, type SyncResult } from './runner';
 
 const RELEVANT = new Set<string>(POSITIONS);
@@ -37,22 +39,94 @@ export async function syncPlayers(opts: { force?: boolean } = {}): Promise<SyncR
       return pos !== null && RELEVANT.has(pos);
     });
 
+    // Snapshot the state each player was in BEFORE this sync overwrites it.
+    // Depth-chart order and injury status are otherwise upserted in place —
+    // every prior value is silently lost the moment a new one arrives, which
+    // is exactly the history a "why is he rising" report needs. This starts
+    // capturing from whenever this code first runs; Sleeper only exposes
+    // current state, so there is nothing to backfill retroactively.
+    const before = new Map(
+      (
+        await prisma.player.findMany({
+          where: { id: { in: keep.map((p) => p.player_id) } },
+          select: { id: true, depthChartOrder: true, depthChartPosition: true, injuryStatus: true },
+        })
+      ).map((p) => [p.id, p]),
+    );
+
+    const season = (await getConfig()).season;
+    const now = new Date();
+
     let written = 0;
+    let depthChartEvents = 0;
+    let injuryEvents = 0;
+
     // Chunked to keep a single SQLite transaction from getting unreasonably
     // long; ~1,500 upserts is fast but not instant.
     const CHUNK = 250;
     for (let i = 0; i < keep.length; i += CHUNK) {
       const chunk = keep.slice(i, i + CHUNK);
-      await prisma.$transaction(
-        chunk.map((p) => {
-          const data = toPlayerData(p);
-          return prisma.player.upsert({
+      const ops: Prisma.PrismaPromise<unknown>[] = [];
+
+      for (const p of chunk) {
+        const data = toPlayerData(p);
+        ops.push(
+          prisma.player.upsert({
             where: { id: p.player_id },
             create: { id: p.player_id, ...data },
             update: data,
-          });
-        }),
-      );
+          }),
+        );
+
+        const prior = before.get(p.player_id);
+
+        // Depth-chart move: needs a real rank to write (the column is
+        // non-nullable) and a team to satisfy the FK, so a player dropping
+        // off the chart entirely is not representable here — only entering
+        // or moving within one is.
+        if (
+          data.depthChartOrder !== null &&
+          data.teamId &&
+          (prior?.depthChartOrder !== data.depthChartOrder || prior?.depthChartPosition !== data.depthChartPosition)
+        ) {
+          ops.push(
+            prisma.depthChartEntry.create({
+              data: {
+                teamId: data.teamId,
+                playerId: p.player_id,
+                position: data.position,
+                rank: data.depthChartOrder,
+                source: 'sleeper',
+                season,
+                effectiveAt: now,
+              },
+            }),
+          );
+          depthChartEvents += 1;
+        }
+
+        // Injury status change, including a change back to healthy (null) —
+        // that transition matters as much as the injury itself.
+        if (prior && prior.injuryStatus !== data.injuryStatus) {
+          ops.push(
+            prisma.injuryReport.create({
+              data: {
+                playerId: p.player_id,
+                teamId: data.teamId,
+                season,
+                status: data.injuryStatus,
+                bodyPart: data.injuryBodyPart,
+                note: data.injuryNotes,
+                source: 'sleeper',
+                reportedAt: now,
+              },
+            }),
+          );
+          injuryEvents += 1;
+        }
+      }
+
+      await prisma.$transaction(ops);
       written += chunk.length;
     }
 
@@ -61,7 +135,12 @@ export async function syncPlayers(opts: { force?: boolean } = {}): Promise<SyncR
     return {
       recordsIn: entries.length,
       recordsWritten: written,
-      detail: { keptPositions: [...RELEVANT], discarded: entries.length - keep.length },
+      detail: {
+        keptPositions: [...RELEVANT],
+        discarded: entries.length - keep.length,
+        depthChartEvents,
+        injuryEvents,
+      },
     };
   });
 }
@@ -89,11 +168,15 @@ function toPlayerData(p: SleeperPlayer) {
     active: p.active ?? true,
     status: p.status,
     searchRank: typeof p.search_rank === 'number' && p.search_rank < 9999999 ? p.search_rank : null,
-    injuryStatus: p.injury_status,
-    injuryBodyPart: p.injury_body_part,
-    injuryNotes: p.injury_notes,
-    depthChartPosition: p.depth_chart_position,
-    depthChartOrder: p.depth_chart_order,
+    // Explicit `?? null` rather than leaving these `undefined`: Prisma treats
+    // an undefined field as "omit from the update", not "clear it", so a
+    // player Sleeper stops reporting an injury/depth-chart value for would
+    // otherwise keep his last stored value forever.
+    injuryStatus: p.injury_status ?? null,
+    injuryBodyPart: p.injury_body_part ?? null,
+    injuryNotes: p.injury_notes ?? null,
+    depthChartPosition: p.depth_chart_position ?? null,
+    depthChartOrder: typeof p.depth_chart_order === 'number' ? p.depth_chart_order : null,
     rawJson: writeJson(p),
   };
 }
