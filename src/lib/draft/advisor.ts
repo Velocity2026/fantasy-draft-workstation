@@ -287,8 +287,17 @@ export function buildSuggestions(ctx: AdvisorContext, limit = 40): Suggestion[] 
     }
 
     // --- Explanations -------------------------------------------------------
+    // adpDelta = overallRank - adp, so NEGATIVE means we rank him ahead of
+    // where the market drafts him — i.e. he is falling to us.
+    if (player.adpDelta !== null && player.adpDelta < -8) {
+      reasons.push(
+        `Falling: we rank him ${player.overallRank}, market drafts him around ${player.adp?.toFixed(0)}.`,
+      );
+    }
     if (player.adpDelta !== null && player.adpDelta > 8) {
-      reasons.push(`Falling: market ADP ${player.adp?.toFixed(0)}, we rank him ${player.overallRank}.`);
+      reasons.push(
+        `Ahead of our board: market takes him around ${player.adp?.toFixed(0)}, we have him ${player.overallRank}.`,
+      );
     }
     if (nextPick !== null && availability < 0.25 && player.vorp > 0) {
       reasons.push(`Only ~${Math.round(availability * 100)}% likely to last until your pick at ${nextPick}.`);
@@ -324,9 +333,17 @@ function classify(
   status: string | undefined,
 ): Suggestion['classification'] {
   if (status === 'AVOID' || status === 'DO_NOT_DRAFT') return 'AVOID';
-  if (player.adpDelta !== null && player.adpDelta > 12) return 'VALUE';
-  if (player.adpDelta !== null && player.adpDelta < -12) return 'REACH';
+
+  // Upside is checked before the ADP comparison on purpose. In this league,
+  // taking a high-ceiling player ahead of his market price is a deliberate
+  // strategy, not an error — labelling him a "reach" would editorialise
+  // against the thing you are trying to do.
   if ((player.upsideScore ?? 0) > 0.55 && (player.riskScore ?? 0) > 0.3) return 'UPSIDE_SWING';
+
+  // adpDelta = overallRank - adp. Negative = we rank him better than the
+  // market prices him = value. Positive = we would be taking him early.
+  if (player.adpDelta !== null && player.adpDelta < -12) return 'VALUE';
+  if (player.adpDelta !== null && player.adpDelta > 12) return 'REACH';
   if ((player.riskScore ?? 1) < 0.2 && (player.floorPoints ?? 0) > 0) return 'SAFE_FLOOR';
   if (vona > 20 || availability < 0.2) return 'TARGET';
   return 'TARGET';

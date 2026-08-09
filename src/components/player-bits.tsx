@@ -44,16 +44,31 @@ export function InjuryTag({ status }: { status?: string | null }) {
 }
 
 /**
- * ADP delta. Negative delta means we rank him ahead of the market, i.e. the
- * market lets him fall — that's the value signal, so it reads green.
+ * ADP delta, shown as picks of value.
+ *
+ * Stored as `overallRank - adp`, so a NEGATIVE stored delta is the good case:
+ * we rank him ahead of where the market drafts him. Displaying that raw means
+ * showing a green "−20", which reads wrong at a glance under time pressure.
+ * So the sign is flipped for display: **positive means picks of value**, and
+ * the colour follows the displayed number.
  */
 export function ValueDelta({ delta }: { delta: number | null | undefined }) {
   if (delta === null || delta === undefined) return <span className="text-muted-foreground">—</span>;
-  const rounded = Math.round(delta);
-  if (Math.abs(rounded) < 5) return <span className="text-muted-foreground tabular">±{Math.abs(rounded)}</span>;
+  const value = Math.round(-delta);
+  if (Math.abs(value) < 5) return <span className="text-muted-foreground tabular">±{Math.abs(value)}</span>;
   return (
-    <span className={cn('tabular font-medium', rounded > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400')}>
-      {rounded > 0 ? `+${rounded}` : rounded}
+    <span
+      className={cn(
+        'tabular font-medium',
+        value > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400',
+      )}
+      title={
+        value > 0
+          ? `We rank him ${value} picks ahead of where the market drafts him`
+          : `Market drafts him ${Math.abs(value)} picks ahead of our board`
+      }
+    >
+      {value > 0 ? `+${value}` : value}
     </span>
   );
 }
